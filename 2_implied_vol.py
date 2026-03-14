@@ -1,27 +1,14 @@
 """
-implied_vol.py
+2_implied_vol.py
 ==============
 Step 2: Implied Volatility Extraction
 
 Reads the cleaned option data produced by data_collection.py and computes
 the implied volatility (IV) for each option by numerically inverting the
 Black-Scholes formula.
-
-Inputs:
-    data/processed/options_final.csv   (produced by data_collection.py)
-
-Outputs:
-    data/processed/options_with_iv.csv ← used by ALL subsequent scripts
-
-Usage:
-    python implied_vol.py
-
-All other scripts should load IV data with:
-    import pandas as pd
-    df = pd.read_csv("data/processed/options_with_iv.csv",
-                     parse_dates=["ObsDate", "ExDt"])
 """
 
+import os
 import warnings
 import numpy as np
 import pandas as pd
@@ -30,49 +17,41 @@ from scipy.optimize import brentq
 
 warnings.filterwarnings("ignore")
 
-# ── Configuration ──────────────────────────────────────────────────────────────
+# ── 0. PATHS ───────────────────────────────────────────────────────────────────
+# Mirrors the path construction in data_collection.py so this script resolves
+# correctly regardless of the working directory it is launched from.
 
-INPUT_PATH  = "data/processed/options_final.csv"
-OUTPUT_PATH = "data/processed/options_with_iv.csv"
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+DATASET_DIR = os.path.join(BASE_DIR, "DataSet")
 
-IV_MIN   = 0.01   # 1%  — discard solutions below this (nonsensical)
-IV_MAX   = 5.00   # 500% — discard solutions above this (numerical artefact)
-IV_INIT  = 0.25   # 25% — initial guess passed to solver (not used by brentq)
-PRICE_TOL = 1e-6  # tolerance for BS price vs market price match
+INPUT_PATH  = os.path.join(DATASET_DIR, "data/processed/options_final.csv")
+OUTPUT_PATH = os.path.join(DATASET_DIR, "data/processed/options_with_iv.csv")
 
+# ── 1. CONFIGURATION ───────────────────────────────────────────────────────────
 
-# ── Black-Scholes Implementation ───────────────────────────────────────────────
+IV_MIN    = 0.01           # lower bracket for Brent's solver — must match 1_data_collection.py !!
+IV_MAX    = 5.00           # 500% — discard solutions above this
+IV_INIT   = 0.25           # 25%  — kept for reference; not used by brentq
+PRICE_TOL = 1e-6           # tolerance for BS price vs market price match
 
+# NOTE ON IV_data COLUMN
+# data_collection.py now passes through a column called IV_data (Refinitiv IV).
+# This column is carried along untouched — it is for reference / benchmarking
+# only and is NEVER used in any calculation in this script.
+
+# ── 2. BLACK-SCHOLES IMPLEMENTATION ───────────────────────────────────────────
+
+#Black-Scholes Formula (Merton's Model)
 def bs_d1(S: float, K: float, T: float, r: float, q: float, sigma: float) -> float:
     """Computes d1 in the Black-Scholes formula."""
     return (np.log(S / K) + (r - q + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-
 
 def bs_d2(S: float, K: float, T: float, r: float, q: float, sigma: float) -> float:
     """Computes d2 = d1 - sigma * sqrt(T)."""
     return bs_d1(S, K, T, r, q, sigma) - sigma * np.sqrt(T)
 
-
 def bs_price(S: float, K: float, T: float, r: float, q: float,
              sigma: float, option_type: str) -> float:
-    """
-    Black-Scholes option price for European call or put on a
-    dividend-paying underlying (continuous dividend yield q).
-
-    Parameters
-    ----------
-    S           : Spot price
-    K           : Strike price
-    T           : Time to maturity in years
-    r           : Continuously compounded risk-free rate
-    q           : Continuous dividend yield
-    sigma       : Volatility (annualised)
-    option_type : 'call' or 'put'
-
-    Returns
-    -------
-    float : Option price
-    """
     if T <= 0 or sigma <= 0:
         return 0.0
 
@@ -90,25 +69,16 @@ def bs_price(S: float, K: float, T: float, r: float, q: float,
 
     return float(price)
 
-
+# Computing Vega
 def bs_vega(S: float, K: float, T: float, r: float, q: float, sigma: float) -> float:
-    """
-    Black-Scholes vega: sensitivity of option price to volatility.
-    Same formula for calls and puts.
-    Used for Newton-Raphson and for vega-weighted loss functions in Step 4.
-    """
     if T <= 0 or sigma <= 0:
         return 0.0
     d1 = bs_d1(S, K, T, r, q, sigma)
     return float(S * np.exp(-q * T) * norm.pdf(d1) * np.sqrt(T))
 
-
+# Computing Delta
 def bs_delta(S: float, K: float, T: float, r: float, q: float,
              sigma: float, option_type: str) -> float:
-    """
-    Black-Scholes delta: dPrice/dS.
-    Useful for diagnostics and hedging discussion in the report.
-    """
     if T <= 0 or sigma <= 0:
         return 0.0
     d1 = bs_d1(S, K, T, r, q, sigma)
@@ -117,24 +87,10 @@ def bs_delta(S: float, K: float, T: float, r: float, q: float,
     else:
         return float(-np.exp(-q * T) * norm.cdf(-d1))
 
-
-# ── Implied Volatility Solver ──────────────────────────────────────────────────
+# ── 3. IMPLIED VOLATILITY SOLVER ──────────────────────────────────────────────
 
 def implied_vol_brentq(market_price: float, S: float, K: float, T: float,
-                        r: float, q: float, option_type: str) -> float:
-    """
-    Computes implied volatility by inverting Black-Scholes using Brent's method.
-
-    Brent's method (scipy.optimize.brentq) is preferred over Newton-Raphson
-    because it is guaranteed to converge if a sign change exists in [IV_MIN, IV_MAX].
-    It does not require derivatives, is numerically stable, and always brackets
-    the solution.
-
-    Returns np.nan if:
-      - T <= 0 (expired option)
-      - No sign change found in [IV_MIN, IV_MAX] (price outside BS range)
-      - The solved IV is outside [IV_MIN, IV_MAX]
-    """
+                       r: float, q: float, option_type: str) -> float:
     if T <= 0:
         return np.nan
 
@@ -146,7 +102,7 @@ def implied_vol_brentq(market_price: float, S: float, K: float, T: float,
         f_low  = objective(IV_MIN)
         f_high = objective(IV_MAX)
 
-        # Brentq requires a sign change in the interval
+        # brentq requires a sign change within the bracket
         if f_low * f_high > 0:
             return np.nan
 
@@ -160,26 +116,25 @@ def implied_vol_brentq(market_price: float, S: float, K: float, T: float,
     except (ValueError, RuntimeError):
         return np.nan
 
+# ── 4. PUT-CALL PARITY CHECK ──────────────────────────────────────────────────
 
-# ── Put-Call Parity Check ──────────────────────────────────────────────────────
-
-def pcp_implied_vol(row_call: pd.Series, row_put: pd.Series) -> float:
+def pcp_violation(row_call: pd.Series, row_put: pd.Series) -> float:
     """
-    Cross-check: for matched call/put pairs at the same (K, T),
-    put-call parity (PCP) implies:
-        C - P = S*exp(-qT) - K*exp(-rT)
+    Cross-check for matched call/put pairs at the same (K, T).
 
-    If the pair violates PCP by more than a threshold, flag both options.
-    Returns the PCP violation in price units.
+    Put-call parity (PCP) implies:
+        C - P = S * exp(-qT) - K * exp(-rT)
+
+    Returns the absolute PCP violation in price units.
+    Large violations indicate data errors or bid-ask spread issues.
     """
-    S, K, T, r, q = row_call["S0"], row_call["Strike"], row_call["T"], row_call["Rf"], row_call["q"]
-    C = row_call["MidPrice"]
-    P = row_put["MidPrice"]
+    S, K, T = row_call["S0"], row_call["Strike"], row_call["T"]
+    r, q    = row_call["Rf"], row_call["q"]
+    C, P    = row_call["MidPrice"], row_put["MidPrice"]
     theoretical = S * np.exp(-q * T) - K * np.exp(-r * T)
     return abs((C - P) - theoretical)
 
-
-# ── Main IV Computation ────────────────────────────────────────────────────────
+# ── 5. MAIN IV COMPUTATION ────────────────────────────────────────────────────
 
 def compute_implied_vols(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -191,12 +146,15 @@ def compute_implied_vols(df: pd.DataFrame) -> pd.DataFrame:
 
     Rows where IV cannot be computed are retained but flagged (IV_valid=False).
     The caller decides whether to drop or keep invalid rows.
+
+    Note: IV_data (Refinitiv reference IV) is left untouched in the dataframe.
     """
     df = df.copy()
 
-    ivs    = np.full(len(df), np.nan)
-    vegas  = np.full(len(df), np.nan)
-    deltas = np.full(len(df), np.nan)
+    n      = len(df)
+    ivs    = np.full(n, np.nan)
+    vegas  = np.full(n, np.nan)
+    deltas = np.full(n, np.nan)
 
     for i, row in df.iterrows():
         iv = implied_vol_brentq(
@@ -212,7 +170,8 @@ def compute_implied_vols(df: pd.DataFrame) -> pd.DataFrame:
 
         if not np.isnan(iv):
             vegas[i]  = bs_vega( row["S0"], row["Strike"], row["T"], row["Rf"], row["q"], iv)
-            deltas[i] = bs_delta(row["S0"], row["Strike"], row["T"], row["Rf"], row["q"], iv, row["OptionType"])
+            deltas[i] = bs_delta(row["S0"], row["Strike"], row["T"], row["Rf"], row["q"], iv,
+                                 row["OptionType"])
 
     df["IV"]       = ivs
     df["Vega"]     = vegas
@@ -221,14 +180,13 @@ def compute_implied_vols(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-
-# ── Diagnostics ────────────────────────────────────────────────────────────────
+# ── 6. DIAGNOSTICS ────────────────────────────────────────────────────────────
 
 def print_diagnostics(df_raw: pd.DataFrame, df_valid: pd.DataFrame) -> None:
     """Prints a summary of IV computation success rates."""
-    total     = len(df_raw)
-    solved    = df_raw["IV_valid"].sum()
-    failed    = total - solved
+    total      = len(df_raw)
+    solved     = int(df_raw["IV_valid"].sum())
+    failed     = total - solved
     pct_solved = 100 * solved / total if total > 0 else 0
 
     print(f"\n── IV Extraction Diagnostics ─────────────────────────────")
@@ -244,11 +202,22 @@ def print_diagnostics(df_raw: pd.DataFrame, df_valid: pd.DataFrame) -> None:
         print(f"    Mean IV : {df_valid['IV'].mean():.4f}  ({df_valid['IV'].mean()*100:.2f}%)")
         print(f"    Std IV  : {df_valid['IV'].std():.4f}  ({df_valid['IV'].std()*100:.2f}%)")
 
+        # IV_data comparison — surface-level sanity check only
+        if "IV_data" in df_valid.columns:
+            ref = df_valid["IV_data"].dropna()
+            if not ref.empty:
+                diff = (df_valid.loc[ref.index, "IV"] - ref).abs()
+                print(f"\n  IV vs IV_data (Refinitiv reference, {len(ref)} matched rows):")
+                print(f"    Mean abs diff : {diff.mean():.4f}  ({diff.mean()*100:.2f}%)")
+                print(f"    Max abs diff  : {diff.max():.4f}  ({diff.max()*100:.2f}%)")
+                print(f"    Note: IV_data is NOT used in any calculation — reference only.")
+
     print(f"\n  Breakdown by option type:")
     for opt_type in ["call", "put"]:
         subset = df_valid[df_valid["OptionType"] == opt_type]
-        print(f"    {opt_type.capitalize()}s : {len(subset)} options, "
-              f"mean IV = {subset['IV'].mean():.4f}")
+        if not subset.empty:
+            print(f"    {opt_type.capitalize()}s : {len(subset)} options, "
+                  f"mean IV = {subset['IV'].mean():.4f}")
 
     print(f"\n  Breakdown by observation date:")
     for obs_date, group in df_valid.groupby("ObsDate"):
@@ -257,65 +226,44 @@ def print_diagnostics(df_raw: pd.DataFrame, df_valid: pd.DataFrame) -> None:
               f"IV range = [{group['IV'].min():.4f}, {group['IV'].max():.4f}]")
 
 
-# ── Standalone helper functions (importable by other scripts) ──────────────────
+# ── 7. PUBLIC WRAPPERS (importable by downstream scripts) ─────────────────────
 
 def get_bs_price(S: float, K: float, T: float, r: float, q: float,
                  sigma: float, option_type: str) -> float:
-    """
-    Public wrapper around bs_price().
-    Import this in dvf_models.py and estimation.py to get model prices.
-
-    Example:
-        from implied_vol import get_bs_price
-        price = get_bs_price(S=5000, K=5000, T=0.25, r=0.05,
-                              q=0.013, sigma=0.20, option_type='call')
-    """
     return bs_price(S, K, T, r, q, sigma, option_type)
 
 
 def get_bs_vega(S: float, K: float, T: float, r: float, q: float,
                 sigma: float) -> float:
-    """
-    Public wrapper around bs_vega().
-    Import this in loss_functions.py for vega-weighted loss (L5).
-
-    Example:
-        from implied_vol import get_bs_vega
-        vega = get_bs_vega(S=5000, K=5000, T=0.25, r=0.05, q=0.013, sigma=0.20)
-    """
     return bs_vega(S, K, T, r, q, sigma)
 
 
 def get_iv(market_price: float, S: float, K: float, T: float,
            r: float, q: float, option_type: str) -> float:
-    """
-    Public wrapper around implied_vol_brentq().
-    Useful if other scripts need to compute a single IV on the fly.
-
-    Example:
-        from implied_vol import get_iv
-        iv = get_iv(market_price=50.0, S=5000, K=5000, T=0.25,
-                    r=0.05, q=0.013, option_type='call')
-    """
     return implied_vol_brentq(market_price, S, K, T, r, q, option_type)
 
-
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── 8. MAIN ───────────────────────────────────────────────────────────────────
 
 def main():
     print("\n=== Step 2: Implied Volatility Extraction ===\n")
 
     # Load data from Step 1
-    print(f"Loading data from {INPUT_PATH}...")
+    print(f"Loading data from:\n  {INPUT_PATH}")
     df = pd.read_csv(INPUT_PATH, parse_dates=["ObsDate", "ExDt"])
     print(f"  Loaded {len(df)} options across {df['ObsDate'].nunique()} observation date(s).")
 
+    if "IV_data" in df.columns:
+        print(f"  IV_data column present ({df['IV_data'].notna().sum()} non-null) "
+              f"— carried through for reference, not used in calculations.")
+
     # Compute implied volatilities
     print(f"\nSolving for implied volatility (Brent's method)...")
+    print(f"  IV bracket : [{IV_MIN:.4f}, {IV_MAX:.2f}]  "
+          f"(IV_MIN sourced from data_collection.MIN_IV_FILTER)")
     print(f"  This may take a moment for large datasets...")
     df_with_iv = compute_implied_vols(df)
 
-    # Separate valid and invalid
+    # Separate valid and invalid rows
     df_valid = df_with_iv[df_with_iv["IV_valid"]].copy()
 
     # Print diagnostics
@@ -323,11 +271,12 @@ def main():
 
     # Save output — only keep options with valid IV
     df_valid.to_csv(OUTPUT_PATH, index=False)
-    print(f"\n✓ Saved {len(df_valid)} options with valid IV → {OUTPUT_PATH}")
+    print(f"\n✓ Saved {len(df_valid)} options with valid IV →\n  {OUTPUT_PATH}")
 
     print("\n=== Done. Load IV data in subsequent scripts with: ===")
     print("  import pandas as pd")
-    print(f'  df = pd.read_csv("{OUTPUT_PATH}", parse_dates=["ObsDate", "ExDt"])')
+    print("  from implied_vol import OUTPUT_PATH")
+    print('  df = pd.read_csv(OUTPUT_PATH, parse_dates=["ObsDate", "ExDt"])')
     print("\nFunctions available for import by other scripts:")
     print("  from implied_vol import get_bs_price   # Black-Scholes price")
     print("  from implied_vol import get_bs_vega    # BS vega (for loss fn L5)")
