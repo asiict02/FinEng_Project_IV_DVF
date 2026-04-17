@@ -86,13 +86,13 @@ def main():
     ivs   = np.full(len(df), np.nan)
     vegas = np.full(len(df), np.nan)
 
-    for i, (_, row) in enumerate(df.iterrows()):
-        iv_hint = float(row["IV_data"]) if has_hint and not pd.isna(row["IV_data"]) else None
-        iv = solve_iv(row["MidPrice"], row["S0"], row["Strike"], row["T"],
-                      row["Rf"], row["q"], row["OptionType"], iv_hint=iv_hint)
+    for i, row in enumerate(df.itertuples(index=False)):
+        iv_hint = float(row.IV_data) if has_hint and not pd.isna(row.IV_data) else None
+        iv = solve_iv(row.MidPrice, row.S0, row.Strike, row.T,
+                      row.Rf, row.q, row.OptionType, iv_hint=iv_hint)
         ivs[i] = iv
         if not np.isnan(iv):
-            vegas[i] = bs_vega(row["S0"], row["Strike"], row["T"], row["Rf"], row["q"], iv)
+            vegas[i] = bs_vega(row.S0, row.Strike, row.T, row.Rf, row.q, iv)
 
     df["IV"]   = ivs
     df["Vega"] = vegas

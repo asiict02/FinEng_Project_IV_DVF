@@ -113,8 +113,9 @@ def main():
                 "converged": res.success,
             })
             n_obs = len(arrays["IV"])
-            aic = n_obs * np.log(res.fun) + 2 * n_params
-            bic = n_obs * np.log(res.fun) + np.log(n_obs) * n_params
+            ll = -0.5 * n_obs * (np.log(2 * np.pi * res.fun) + 1)
+            aic = -2 * ll + 2 * n_params
+            bic = -2 * ll + np.log(n_obs) * n_params
 
             loss_rows.append({
                 "model_id": model_id, "loss_id": loss_id,

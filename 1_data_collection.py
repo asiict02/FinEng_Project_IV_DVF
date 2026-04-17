@@ -26,7 +26,7 @@ PCP_TOL           = 2.0    # maximum allowed put-call parity violation in dollar
 
 
 def _apply_pcp_filter(df: pd.DataFrame, tol: float) -> pd.DataFrame:
-    key = ["ObsDate", "T", "Strike", "S0", "Rf", "q"]
+    key = ["ObsDate", "ExDt", "T", "Strike", "S0", "Rf", "q"]
     calls = df[df["OptionType"] == "call"][key + ["MidPrice"]].copy()
     puts  = df[df["OptionType"] == "put"][key  + ["MidPrice"]].copy()
 
