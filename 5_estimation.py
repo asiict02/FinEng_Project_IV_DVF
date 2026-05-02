@@ -21,12 +21,17 @@ _dvf  = importlib.import_module("3_dvf_models")
 _loss = importlib.import_module("4_loss_functions")
 
 PROC_DIR    = os.path.join(_HERE, "DataSet", "data", "processed")
+
+"""
+Estimation hyperparameters and parameter bounds. TRAIN_RATIO sets the
+temporal train/test split at 70%; N_STARTS controls the number of
+optimisation restarts to avoid local minima; RNG_SEED ensures
+reproducibility. BOUNDS constrain a0 > 0 (ATM vol must be positive)
+and all other coefficients to [-5, 5], sufficient for log-moneyness scale.
+"""
 TRAIN_RATIO = 0.7
 N_STARTS    = 5
 RNG_SEED    = 42
-
-# Parameter bounds: a0 (intercept) > 0 since it anchors ATM vol level;
-# other coefficients allowed in [-5, 5] to accommodate log-moneyness scale
 BOUNDS = {
     "M0": [(0.001, 5.0)],
     "M1": [(0.001, 5.0), (-5.0, 5.0)],
@@ -39,8 +44,10 @@ BOUNDS = {
 def _fit_one(model_id: str, loss_id: str, arrays: dict, mean_iv: float,
              rng: np.random.Generator) -> tuple:
     """
-    Fit a single (model_id, loss_id) pair using L-BFGS-B with N_STARTS restarts.
-    Returns (best_result, n_params).
+    Fits one (model_id, loss_id) pair by running L-BFGS-B optimisation
+    N_STARTS times with different initialisations and retaining the best
+    solution. Multiple starts are needed because M3 and M4 have non-convex
+    objective surfaces that can trap a single run in a local minimum.
     """
     n_params = len(BOUNDS[model_id])
 
@@ -55,8 +62,9 @@ def _fit_one(model_id: str, loss_id: str, arrays: dict, mean_iv: float,
     best_res = None
     for start_idx in range(N_STARTS):
         if start_idx == 0:
+            # zeros → flat surface with no skew or curvature
             x0 = np.zeros(n_params)
-            x0[0] = mean_iv   # a0 initialised at mean IV — most informative single start
+            x0[0] = mean_iv                # a0 initialised at mean IV — most informative single start
         else:
             x0 = rng.uniform(0.01, 0.5, size=n_params)
             x0[0] = float(np.clip(rng.normal(mean_iv, 0.05), 0.01, 0.8))
@@ -70,6 +78,14 @@ def _fit_one(model_id: str, loss_id: str, arrays: dict, mean_iv: float,
     return best_res, n_params
 
 def main():
+    """
+    Main pipeline: loads options_with_iv.csv, performs a temporal train/test
+    split at the 70th percentile date to avoid look-ahead bias, pre-extracts
+    training arrays for efficient optimisation, fits all 10 (model x loss)
+    combinations via _fit_one, computes AIC and BIC from the Gaussian
+    log-likelihood of IV errors, saves fitted parameters and in-sample losses
+    to CSV, and prints summary tables for sanity checking.
+    """
     df = pd.read_csv(os.path.join(PROC_DIR, "options_with_iv.csv"),
                      parse_dates=["ObsDate", "ExDt"])
 

@@ -24,6 +24,12 @@ HINT_HI_MULT = 2.0
 
 
 # ── Black-Scholes (Merton with continuous dividend yield q) ───────────────────
+"""
+Black-Scholes-Merton helper functions. _d1 and _d2 compute the standard
+BSM terms used in both the price and vega formulas. bs_price returns the
+theoretical call or put price; bs_vega returns the option's sensitivity
+to volatility (∂C/∂σ), evaluated at the solved IV and used for L5 weighting.
+"""
 def _d1(S, K, T, r, q, σ):
     return (np.log(S / K) + (r - q + 0.5 * σ**2) * T) / (σ * np.sqrt(T))
 
@@ -47,7 +53,13 @@ def bs_vega(S, K, T, r, q, σ):
 
 def solve_iv(price, S, K, T, r, q, opt, iv_hint=None):
     """
-    Brent's method: find σ such that BS_price(σ) = market_price.
+    Inverts the BSM formula to find the implied volatility σ such that
+    BSM_price(σ) = market MidPrice, using Brent's method. Brent's method is
+    preferred over Newton-Raphson because it guarantees convergence within a
+    bracket, whereas NR can diverge when vega ≈ 0 for deep OTM options.
+    If a data-provider IV hint is available, a tight bracket is tried first;
+    the full [IV_MIN, IV_MAX] bracket is used as fallback. Returns NaN if
+    no solution exists within bounds.
     """
     if T <= 0:
         return np.nan
@@ -76,6 +88,12 @@ def solve_iv(price, S, K, T, r, q, opt, iv_hint=None):
         return np.nan
 
 def main():
+    """
+    Main pipeline: loads options_final.csv, iterates over all options using
+    Brent's method with warm-starting to solve for IV and compute Vega at the
+    solved IV, drops unsolved rows, saves the result to options_with_iv.csv,
+    and prints a summary of solve rate and IV/Vega statistics for sanity checking.
+    """
     df = pd.read_csv(INPUT_PATH, parse_dates=["ObsDate", "ExDt"])
     print(f"Loaded {len(df)} options. Solving IV (Brent's method with warm start)...")
 
@@ -86,12 +104,14 @@ def main():
     ivs   = np.full(len(df), np.nan)
     vegas = np.full(len(df), np.nan)
 
+    # Warm start: provider IV narrows the search bracket, cutting iterations for liquid options
     for i, row in enumerate(df.itertuples(index=False)):
         iv_hint = float(row.IV_data) if has_hint and not pd.isna(row.IV_data) else None
         iv = solve_iv(row.MidPrice, row.S0, row.Strike, row.T,
                       row.Rf, row.q, row.OptionType, iv_hint=iv_hint)
         ivs[i] = iv
         if not np.isnan(iv):
+            # Vega is evaluated at the solved IV, not a guess — ensures correct L5 weighting later
             vegas[i] = bs_vega(row.S0, row.Strike, row.T, row.Rf, row.q, iv)
 
     df["IV"]   = ivs

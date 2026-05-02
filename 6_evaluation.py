@@ -21,6 +21,14 @@ PROC_DIR = os.path.join(_HERE, "DataSet", "data", "processed")
 
 
 def main():
+    """
+    Main pipeline: loads the test set and fitted parameters, applies each of
+    the 10 (model x loss) combinations to the test set using apply_model_to_df,
+    computes the full 2x2 OOS loss matrix per model using both L2 and L5,
+    calculates price-space RMSE in dollar terms, runs the diagonal dominance
+    check from Christoffersen & Jacobs (2004), prints summary tables, and
+    saves all OOS results to oos_all_losses.csv.
+    """
     # ── Load data ──────────────────────────────────────────────────────────────
     df_test   = pd.read_csv(os.path.join(PROC_DIR, "options_test.csv"),
                             parse_dates=["ObsDate", "ExDt"])
@@ -33,8 +41,7 @@ def main():
     for _, p in df_params.iterrows():
         model_id = p["model_id"]
         loss_id  = p["loss_id"]
-        params   = np.array([p[n] for n in _dvf.MODEL_SPECS[model_id]["param_names"]])
-
+        params   = np.array([p[n] for n in _dvf.MODEL_SPECS[model_id]["param_names"]])              # Slice only the params relevant to this model; NaN-padded columns are excluded
         df_pred = _dvf.apply_model_to_df(df_test, params, model_id)
 
         all_losses = _loss.compute_all_losses(
@@ -45,7 +52,7 @@ def main():
         )
 
         price_resid = df_pred["ModelPrice"] - df_pred["MidPrice"]
-        price_rmse = float(np.sqrt((price_resid ** 2).mean()))
+        price_rmse = float(np.sqrt((price_resid ** 2).mean()))      # Price-space RMSE translates model error into dollar terms, directly interpretable for hedging cost
 
         rows.append({"model_id": model_id, "est_loss": loss_id,
                      **all_losses, "price_RMSE": price_rmse})
@@ -71,7 +78,9 @@ def main():
     for model_id in _dvf.MODEL_SPECS:
         sub = df_results[df_results["model_id"] == model_id]
         for eval_loss in ["L2", "L5"]:
+            # Diagonal: model estimated and evaluated under the same loss
             matched = float(sub[sub["est_loss"] == eval_loss][eval_loss].iloc[0])
+            # Off-diagonal: estimated under one loss, evaluated under the other
             unmatched = float(sub[sub["est_loss"] != eval_loss][eval_loss].iloc[0])
             ok = matched < unmatched
             all_pass = all_pass and ok

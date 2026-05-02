@@ -19,13 +19,11 @@ MODEL_SPECS = {
 
 def predict_sigma(params, moneyness, T, model_id):
     """
-    DVF volatility function: maps (moneyness K/S, maturity T) → sigma.
-
-    Parameters
-    params     : array-like of fitted coefficients (length = n_params for model_id)
-    moneyness  : scalar or array of K/S values
-    T          : scalar or array of maturities in years
-    model_id   : one of 'M0', 'M1', 'M2', 'M3', 'M4'
+    Evaluates the DVF polynomial for a given model, mapping (moneyness K/S,
+    maturity T) to predicted volatility σ. Log-moneyness x = log(K/S) is the
+    polynomial basis variable — it centres at 0 for ATM options and is symmetric
+    around it. Output is clipped to [0.001, 5.0] to prevent negative or
+    explosive volatility values from destabilising the optimiser.
     """
     p = params
     x = np.log(moneyness)   # log-moneyness: the polynomial basis variable
@@ -43,10 +41,10 @@ def predict_sigma(params, moneyness, T, model_id):
 
 def apply_model_to_df(df: pd.DataFrame, params, model_id: str) -> pd.DataFrame:
     """
-    Applies DVF model to a DataFrame, adding ModelSigma and ModelPrice columns.
-
-    Passes K/S (moneyness) to predict_sigma, which converts to log-moneyness
-    internally. Black-Scholes is then evaluated at ModelSigma to get ModelPrice.
+    Applies a fitted DVF model to a DataFrame, adding ModelSigma (predicted IV)
+    and ModelPrice (BSM price evaluated at ModelSigma) columns. Used during
+    out-of-sample evaluation and visualization to generate model predictions
+    across the full test set for a given (model, parameter) pair.
     """
     df = df.copy()
     S   = df["S0"].values
@@ -58,9 +56,9 @@ def apply_model_to_df(df: pd.DataFrame, params, model_id: str) -> pd.DataFrame:
     moneyness = K / S
     sigma = predict_sigma(params, moneyness, T, model_id)
 
+    # Reprice each option under BSM using the DVF-predicted σ instead of market IV
     d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-
     call = S * np.exp(-q * T) * norm.cdf(d1)  - K * np.exp(-r * T) * norm.cdf(d2)
     put  = K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)
 

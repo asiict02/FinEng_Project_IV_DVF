@@ -1,6 +1,8 @@
 """
 1_data_collection.py — Data Collection
-Loads SPX option chain (calls & puts) from SP_*.csv files, filters and cleans.
+Loads SPX option chain (calls & puts) from SP_*.csv files, files, applies
+standard market filters, removes put-call parity violations, and saves
+the cleaned dataset for downstream IV extraction and model fitting.
 
 Outputs: DataSet/data/raw/options_raw.csv
          DataSet/data/processed/options_final.csv
@@ -17,15 +19,20 @@ DATASET_DIR = os.path.join(BASE_DIR, "DataSet")
 
 START_DATE        = "2022-04-01"
 END_DATE          = "2022-05-31"
-MIN_MATURITY_DAYS = 7
-MAX_MATURITY_DAYS = 365
-MIN_BID           = 0.05
+MIN_MATURITY_DAYS = 7      # drop options close to maturity
+MAX_MATURITY_DAYS = 365    # drop options with over 1 year maturity
+MIN_BID           = 0.05   # remove stale or crossed quotes
 IV_MIN_FILTER     = 0.05   # drop options with pre-computed IV below this
 IV_MAX_FILTER     = 0.80   # drop options with pre-computed IV above this (outliers)
 PCP_TOL           = 2.0    # maximum allowed put-call parity violation in dollars
 
 
 def _apply_pcp_filter(df: pd.DataFrame, tol: float) -> pd.DataFrame:
+    """
+    Removes matched call-put pairs that violate put-call parity beyond PCP_TOL.
+    Both legs of a violating pair are dropped since it is impossible to identify which side
+    is mis-quoted. Returns the filtered DataFrame with index reset.
+    """
     key = ["ObsDate", "ExDt", "T", "Strike", "S0", "Rf", "q"]
     calls = df[df["OptionType"] == "call"][key + ["MidPrice"]].copy()
     puts  = df[df["OptionType"] == "put"][key  + ["MidPrice"]].copy()
@@ -52,6 +59,11 @@ def _apply_pcp_filter(df: pd.DataFrame, tol: float) -> pd.DataFrame:
 
 
 def main():
+    """
+    Loads all SP_*.csv files, standardises column names, restricts to the analysis window,
+    derives MidPrice and moneyness, applies standard market filters (bid, maturity, moneyness,
+    missing values), removes IV outliers, runs the PCP filter, and saves the cleaned dataset.
+    """
     os.makedirs(os.path.join(DATASET_DIR, "data/raw"),       exist_ok=True)
     os.makedirs(os.path.join(DATASET_DIR, "data/processed"), exist_ok=True)
 

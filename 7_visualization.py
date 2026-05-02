@@ -112,7 +112,7 @@ for loss in ["L2", "L5"]:
                .set_index("est_loss")[[loss]]
                .reindex(["L2", "L5"])
                .astype(float))
-
+        # Per-model scale prevents M0's large loss from collapsing the colour range for M1–M4
         vmin = float(col.min().min())
         vmax = float(col.max().max())
 
